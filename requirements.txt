@@ -1,0 +1,10 @@
+h5py>=3.8.0
+matplotlib>=3.7.1
+numpy>=1.23.5
+optuna>=3.3.0
+pandas>=2.0.3
+requests>=2.31.0  # For downloading data
+scikit-learn>=1.3.0  # For data processing helpers
+seaborn>=0.12.0  # For enhanced plotting
+tqdm>=4.65.0  # For progress bars
+tensorflow[and-cuda]
