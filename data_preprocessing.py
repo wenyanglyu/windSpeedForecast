@@ -26,8 +26,8 @@ def normalize_feature(series):
     """
     Normalizes a given series using its min and max values.
     """
-    min_val = series.min()  # Calculate minimum value
-    max_val = series.max()  # Calculate maximum value
+    min_val = series.min(skipna=True)
+    max_val = series.max(skipna=True)
     return (series - min_val) / (max_val - min_val)
 
 
@@ -35,7 +35,7 @@ CUT_IN_SPEED = 3.0  # m/s
 RATED_SPEED = 15.0  # m/s
 CUT_OUT_SPEED = 20.0  # m/s
 
-
+'''
 def normalize_wind_speed(wind_speed_series, min_speed=None, max_speed=None):
     """
     Custom normalization for wind speed based on the dynamic min and max values from the data.
@@ -66,6 +66,21 @@ def normalize_wind_speed(wind_speed_series, min_speed=None, max_speed=None):
     )
 
     return normalized_speed
+'''
+
+def normalize_wind_speed(wind_speed_series):
+    """
+    Min-Max normalization for wind speed, handling NaN values correctly.
+    Normalized range: [0,1].
+    """
+    # Compute min and max, ignoring NaN values
+    min_speed = wind_speed_series.min(skipna=True)
+    max_speed = wind_speed_series.max(skipna=True)
+
+    # Apply Min-Max normalization while preserving NaNs
+    return (wind_speed_series - min_speed) / (max_speed - min_speed)
+
+
 
 def expand_greymouth_data(greymouth_data):
     """
@@ -131,7 +146,7 @@ def preprocess_data(nelson_data, greymouth_data):
     combined_data['valid_for_window'] = ~combined_data['MEAN_SPD10'].isna()
 
     # Normalize MEAN_SPD10 using the custom wind speed normalization function
-    combined_data['normalized_MEAN_SPD10'] = normalize_wind_speed(combined_data['MEAN_SPD10'], combined_data['MEAN_SPD10'])
+    combined_data['normalized_MEAN_SPD10'] = normalize_wind_speed(combined_data['MEAN_SPD10'])
 
     # Normalize PRESSURE_MSL60 and other columns using Min-Max scaling
     for col in numerical_cols:
@@ -154,6 +169,8 @@ def preprocess_data(nelson_data, greymouth_data):
 
     # Normalize the circular wind direction to [0,1]
     combined_data['wind_dir_circular_norm'] = (combined_data['wind_dir_circular'] + np.pi) / (2 * np.pi)
+
+    combined_data = combined_data.drop(columns=['wind_dir_sin', 'wind_dir_cos', 'wind_dir_rad', 'wind_dir_circular'])
 
     # Extract time features
     combined_data['year'] = combined_data['OBS_DATE'].dt.year
@@ -285,7 +302,7 @@ def create_sliding_windows(wind_data, window_size=2016, forecast_size=144, shift
     return X, y
 
 
-def add_noise_tf(x, y, noise_level=0.02):
+def add_noise_tf(x, y, noise_level=0.05):
     """
     Adds Gaussian noise to input features dynamically within the TensorFlow pipeline.
 

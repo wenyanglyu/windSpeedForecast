@@ -18,7 +18,7 @@ CONFIG = {
     'training': {
         'epochs': 200,  # Main training epochs
         'optuna_epochs': 20,  # Epochs for each optuna trial
-        'n_trials': 20,  # Number of optuna trials
+        'n_trials': 50,  # Number of optuna trials
         'train_ratio': 0.8,
         'val_ratio': 0.1,
         'save_path': 'wind_forecast_model'
@@ -92,6 +92,9 @@ def train_pipeline():
             pickle.dump((X_test, y_test), f)
         print("✅ Test dataset saved")
 
+        # Delete the existing optuna database before running
+        if os.path.exists("wind_forecast.db"):
+            os.remove("wind_forecast.db")
         # Hyperparameter optimization
         best_hyperparams = run_optuna_optimization(
             train_dataset,

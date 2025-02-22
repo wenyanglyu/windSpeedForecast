@@ -85,11 +85,11 @@ def objective(trial, train_dataset, val_dataset, optuna_epochs, steps_per_epoch)
     """
     try:
         # Sample hyperparameters
-        d_model = trial.suggest_categorical("d_model", [64, 128, 256])
-        num_heads = trial.suggest_categorical("num_heads", [2, 4, 8])
-        dff = trial.suggest_categorical("dff", [128, 256, 512])
+        d_model = trial.suggest_int("d_model", 64, 512, step=64)  # Instead of categorical
+        num_heads = trial.suggest_int("num_heads", 2, 16, step=2)  # Instead of categorical
+        dff = trial.suggest_int("dff", 128, 1024, step=128)  # Instead of categorical
         num_layers = trial.suggest_int("num_layers", 2, 6)
-        dropout_rate = trial.suggest_float("dropout_rate", 0.1, 0.3)
+        dropout_rate = trial.suggest_float("dropout_rate", 0.05, 0.25)
 
         # Create model with proper input shape
         model = create_transformer(
