@@ -118,17 +118,17 @@ def power_loss(y_true, y_pred):
     return tf.reduce_mean(tf.abs((power_pred - power_true) / (power_true + 1e-6)))
 
 
-def combined_loss(y_true, y_pred, alpha=1.0, beta=0.1, gamma=0.01):
+def combined_loss(y_true, y_pred, alpha=1, beta=0, gamma=0):
     """
     Combined loss with rebalanced weights
     gamma: heavily reduced weight for power loss
     """
     power_cubic_loss = power_loss(y_true, y_pred)
-    mse_loss = tf.keras.losses.MSE(y_true, y_pred)
+    mae_loss = tf.keras.losses.MAE(y_true, y_pred)
     gradients = y_pred[:, 1:] - y_pred[:, :-1]
     gradient_loss = tf.reduce_mean(tf.abs(gradients))
-
-    return gamma * power_cubic_loss + alpha * mse_loss + beta * gradient_loss
+    print(f"[Loss] y_true shape: {y_true.shape}, y_pred shape: {y_pred.shape}")
+    return alpha * mae_loss + beta * gradient_loss + gamma * power_cubic_loss
 
 
 def create_transformer(input_shape, d_model, num_heads, dff, num_layers, target_shape, rate=0.1):
@@ -136,7 +136,7 @@ def create_transformer(input_shape, d_model, num_heads, dff, num_layers, target_
     Create an advanced transformer model for wind speed forecasting
 
     Args:
-        input_shape: Tuple of input shape (6039,)
+        input_shape: Tuple of input shape (7200,)
         d_model: Dimension of the model
         num_heads: Number of attention heads
         dff: Dimension of feed forward network
@@ -147,7 +147,7 @@ def create_transformer(input_shape, d_model, num_heads, dff, num_layers, target_
     inputs = layers.Input(shape=input_shape)
 
     # Reshape input to 3D tensor
-    seq_length = 201  # 6039 / 30 ≈ 201
+    seq_length = 240  # 7200 / 30 = 240
     features = 30  # 201 * 30 = 6030
 
     # Initial dense layer and reshaping
@@ -265,7 +265,7 @@ def load_model(filepath):
             filepath,
             custom_objects=custom_objects
         )
-        print("✅ Model loaded successfully")
+        print(" Model loaded successfully")
 
         # Print model summary
         print("\nModel Architecture:")
@@ -274,5 +274,5 @@ def load_model(filepath):
         return model
 
     except Exception as e:
-        print(f"❌ Error loading model: {str(e)}")
+        print(f" Error loading model: {str(e)}")
         raise
