@@ -3,7 +3,24 @@ import pandas as pd
 import numpy as np
 import tensorflow as tf
 import pickle
+from sklearn.model_selection import KFold
 
+CONFIG = {
+    'data': {
+        'nelson_file_id': "1FftdSBsoQHrZ0dxnoYDAVYME3Gp8UXsb",
+        'greymouth_file_id': "1WRW60JP8xOl0fcQIivJaUF8883k7Ii6e",
+        'test_data_path': "test_dataset.pkl",
+        'train_data_path': "train_data.pkl",
+        'speed_column': 7,
+        'batch_size': 32,
+        'window_shift': 6
+    },
+    'training': {
+        'train_ratio': 0.8,
+        'val_ratio': 0.1,
+        'test_ratio': 0.1
+    }
+}
 
 def load_csv(file_id):
     """
@@ -31,52 +48,14 @@ def normalize_feature(series):
     return (series - min_val) / (max_val - min_val)
 
 
-CUT_IN_SPEED = 3.0  # m/s
-RATED_SPEED = 15.0  # m/s
-CUT_OUT_SPEED = 20.0  # m/s
-
-'''
-def normalize_wind_speed(wind_speed_series, min_speed=None, max_speed=None):
-    """
-    Custom normalization for wind speed based on the dynamic min and max values from the data.
-    If wind speed is NaN, it returns NaN.
-    """
-    # Dynamically calculate the min and max of the wind speed series if not provided
-    if min_speed is None or max_speed is None:
-        min_speed = wind_speed_series.min()
-        max_speed = wind_speed_series.max()
-
-    # Use np.where to vectorize the conditional normalization
-    normalized_speed = np.where(
-        wind_speed_series.isna(),  # If the value is NaN
-        np.nan,  # Return NaN for NaN wind speeds
-        np.where(
-            wind_speed_series < CUT_IN_SPEED,
-            (wind_speed_series / CUT_IN_SPEED) * 0.1,
-            np.where(
-                (wind_speed_series >= CUT_IN_SPEED) & (wind_speed_series <= RATED_SPEED),
-                0.1 + ((wind_speed_series - CUT_IN_SPEED) / (RATED_SPEED - CUT_IN_SPEED)) * 0.8,
-                np.where(
-                    (wind_speed_series > RATED_SPEED) & (wind_speed_series <= CUT_OUT_SPEED),
-                    0.9 + ((wind_speed_series - RATED_SPEED) / (CUT_OUT_SPEED - RATED_SPEED)) * 0.1,
-                    1.0 + ((wind_speed_series - CUT_OUT_SPEED) / (max_speed - CUT_OUT_SPEED)) * 0.1
-                )
-            )
-        )
-    )
-
-    return normalized_speed
-'''
-
 def normalize_wind_speed(wind_speed_series):
     """
     Min-Max normalization for wind speed, handling NaN values correctly.
     Normalized range: [0,1].
     """
     # Compute min and max, ignoring NaN values
-    min_speed = wind_speed_series.min(skipna=True)
-    max_speed = wind_speed_series.max(skipna=True)
-
+    min_speed = 0
+    max_speed = 21.6
     # Apply Min-Max normalization while preserving NaNs
     return (wind_speed_series - min_speed) / (max_speed - min_speed)
 
@@ -112,7 +91,6 @@ def expand_greymouth_data(greymouth_data):
 
     return expanded_greymouth
 
-
 def preprocess_data(nelson_data, greymouth_data):
     """
     Preprocesses the data by expanding Greymouth data to 10-minute intervals,
@@ -122,7 +100,7 @@ def preprocess_data(nelson_data, greymouth_data):
     nelson_data['OBS_DATE'] = pd.to_datetime(nelson_data['OBS_DATE'], errors='coerce')
     greymouth_data['OBS_DATE'] = pd.to_datetime(greymouth_data['OBS_DATE'], errors='coerce')
 
-    # Remove timezone information (or standardize to UTC)
+    # Remove timezone information
     nelson_data['OBS_DATE'] = nelson_data['OBS_DATE'].dt.tz_localize(None)
     greymouth_data['OBS_DATE'] = greymouth_data['OBS_DATE'].dt.tz_localize(None)
 
@@ -132,72 +110,77 @@ def preprocess_data(nelson_data, greymouth_data):
     # Merge the two datasets on OBS_DATE
     combined_data = pd.merge(nelson_data, expanded_greymouth[['OBS_DATE', 'PRESSURE_MSL60']], on='OBS_DATE', how='left')
 
-    # Convert relevant columns to numeric values (excluding MEAN_SPD10 for now)
-    numerical_cols = ['PRESSURE_MSL60', 'PRESSURE_MSL10', 'RAD_GLOBAL10', 'RAINFALL10', 'MEAN_TEMP10', 'MEAN_RELHUM10']
+    # Convert relevant columns to numeric values
+    numerical_cols = ['PRESSURE_MSL60', 'PRESSURE_MSL10', 'MEAN_TEMP10', 'MEAN_RELHUM10']
     combined_data[numerical_cols] = combined_data[numerical_cols].apply(pd.to_numeric, errors='coerce')
 
-    # Apply forward fill to all numerical columns except MEAN_SPD10
+    # Apply forward fill to all numerical columns
     combined_data[numerical_cols] = combined_data[numerical_cols].ffill()
 
     # Convert MEAN_SPD10 to numeric and set invalid values to NaN
     combined_data['MEAN_SPD10'] = pd.to_numeric(combined_data['MEAN_SPD10'], errors='coerce')
-
-    # Mark MEAN_SPD10 as invalid if NaN (no forward filling for wind speed)
     combined_data['valid_for_window'] = ~combined_data['MEAN_SPD10'].isna()
 
-    # Normalize MEAN_SPD10 using the custom wind speed normalization function
+    # Normalize MEAN_SPD10
     combined_data['normalized_MEAN_SPD10'] = normalize_wind_speed(combined_data['MEAN_SPD10'])
 
-    # Normalize PRESSURE_MSL60 and other columns using Min-Max scaling
+    # Normalize pressure and other features
     for col in numerical_cols:
         combined_data[f'normalized_{col}'] = normalize_feature(combined_data[col])
 
-    import numpy as np
-
-    # Convert MEAN_DIR10 to numeric, forcing errors to NaN
+    # Wind Direction Encoding (Sin and Cos)
     combined_data['MEAN_DIR10'] = pd.to_numeric(combined_data['MEAN_DIR10'], errors='coerce')
-
-    # Convert MEAN_DIR10 to radians
     combined_data['wind_dir_rad'] = np.radians(combined_data['MEAN_DIR10'])
-
-    # Apply sin & cos transformation
     combined_data['wind_dir_sin'] = np.sin(combined_data['wind_dir_rad'])
     combined_data['wind_dir_cos'] = np.cos(combined_data['wind_dir_rad'])
 
-    # Combine sin and cos using atan2 (arctangent function)
-    combined_data['wind_dir_circular'] = np.arctan2(combined_data['wind_dir_sin'], combined_data['wind_dir_cos'])
-
-    # Normalize the circular wind direction to [0,1]
-    combined_data['wind_dir_circular_norm'] = (combined_data['wind_dir_circular'] + np.pi) / (2 * np.pi)
-
-    combined_data = combined_data.drop(columns=['wind_dir_sin', 'wind_dir_cos', 'wind_dir_rad', 'wind_dir_circular'])
-
-    # Extract time features
+    # Year Normalization
     combined_data['year'] = combined_data['OBS_DATE'].dt.year
-    combined_data['day_of_year'] = combined_data['OBS_DATE'].dt.dayofyear
-    combined_data['minute_of_day'] = combined_data['OBS_DATE'].dt.hour * 60 + combined_data['OBS_DATE'].dt.minute
-
-    # Normalize year (2015-2025 -> 0-1)
     combined_data['normalized_year'] = (combined_data['year'] - 2015) / (2025 - 2015)
 
-    # Normalize day of year and time within a day using sine function
-    combined_data['day_of_year_sin'] = np.sin(2 * np.pi * (combined_data['day_of_year'] - 245) / 365)  # 245 is Sept 1st
-    combined_data['minute_of_day_sin'] = np.sin(2 * np.pi * (combined_data['minute_of_day'] - 540) / 1440)  # 540 is 9:00 AM
+    # Day of Year Encoding (Leap Year Consideration)
+    combined_data['day_of_year'] = combined_data['OBS_DATE'].dt.dayofyear
+    combined_data['is_leap_year'] = combined_data['OBS_DATE'].dt.is_leap_year
+    combined_data['day_of_year_sin'] = np.sin(2 * np.pi * combined_data['day_of_year'] / np.where(combined_data['is_leap_year'], 366, 365))
+    combined_data['day_of_year_cos'] = np.cos(2 * np.pi * combined_data['day_of_year'] / np.where(combined_data['is_leap_year'], 366, 365))
 
-    # Convert MEAN_SPD10 to numeric and set invalid values to NaN
-    combined_data['MEAN_SPD10'] = pd.to_numeric(combined_data['MEAN_SPD10'], errors='coerce')
+    # Time of Day Encoding
+    combined_data['minute_of_day'] = combined_data['OBS_DATE'].dt.hour * 60 + combined_data['OBS_DATE'].dt.minute
 
-    # Mark invalid wind speed data as False in the valid_for_window column
-    combined_data['valid_for_window'] = ~combined_data['MEAN_SPD10'].isna()
+    # Print sample values before conversion
+    print("\nSample values before conversion:")
+    print(combined_data[['OBS_DATE', 'minute_of_day']].sample(10))
 
-    # Selecting processed columns
-    selected_features = ['normalized_year', 'day_of_year_sin', 'minute_of_day_sin'] + \
-                        [f'normalized_{col}' for col in numerical_cols] + \
-                        ['wind_dir_circular_norm', 'normalized_MEAN_SPD10', 'valid_for_window']
+    # Apply sine and cosine transformation
+    combined_data['minute_of_day_sin'] = np.sin(2 * np.pi * combined_data['minute_of_day'] / 1440)
+    combined_data['minute_of_day_cos'] = np.cos(2 * np.pi * combined_data['minute_of_day'] / 1440)
+
+    # Print sample values after conversion
+    print("\nSample values after conversion:")
+    print(combined_data[['minute_of_day', 'minute_of_day_sin', 'minute_of_day_cos']].sample(10))
+
+    # Select processed features
+    selected_features = [
+        'normalized_year',  # Year normalization
+        'day_of_year_sin', 'day_of_year_cos',  # Day encoding
+        'minute_of_day_sin', 'minute_of_day_cos',  # Time encoding
+        'wind_dir_sin', 'wind_dir_cos',  # Wind direction encoding
+        'normalized_MEAN_SPD10'  # Normalized wind speed
+    ] + [f'normalized_{col}' for col in numerical_cols] + ['valid_for_window']
+
+    print("Selected features:", selected_features)
+    print("\nFeature statistics:")
+    for feature in selected_features[:-1]:  # Exclude valid_for_window
+        data = combined_data[feature]
+        print(f"\n{feature}:")
+        print(f"Min: {data.min():.4f}")
+        print(f"Max: {data.max():.4f}")
+        print(f"Mean: {data.mean():.4f}")
+        print(f"Std: {data.std():.4f}")
 
     return combined_data[selected_features]
 
-def create_sliding_windows(wind_data, window_size=2016, forecast_size=144, shift=6, features=None):
+def create_sliding_windows(wind_data, window_size=1440, forecast_size=144, shift=6, features=None):
     """
     Creates sliding windows for time series forecasting while avoiding null-speed days.
     Uses a specified shift value to control step size when moving the window.
@@ -220,70 +203,43 @@ def create_sliding_windows(wind_data, window_size=2016, forecast_size=144, shift
             window_data = []
 
             for day in range(7):
-                day_start = i + day * 144  # 每天144个时间间隔
+                day_start = i + day * 144  # Each day has 144 time steps (10-min intervals)
                 day_end = day_start + 144
-                day_data = dataset_values[day_start:day_end, :]  # 每天144个数据点
+                day_data = dataset_values[day_start:day_end, :]  # Extract daily data
 
-                # 计算min、max、mean
-                min_vals = np.min(day_data, axis=0)
-                max_vals = np.max(day_data, axis=0)
-                mean_vals = np.mean(day_data, axis=0)
+                # Reshape into (24 hours, 6 samples per hour, 12 features)
+                hourly_data = day_data.reshape(24, 6, 12)
 
-                # Ensure the length is 11 (features) and append each set of 11 values separately
-                if len(min_vals) == 11 and len(max_vals) == 11 and len(mean_vals) == 11:
-                    window_data.extend(min_vals)  # Add min values (11 values)
-                    window_data.extend(max_vals)  # Add max values (11 values)
-                    window_data.extend(mean_vals)  # Add mean values (11 values)
+                # Compute mean across 6 samples per hour
+                hourly_avg = np.mean(hourly_data, axis=1)  # Shape: (24, 12)
+
+                # Ensure correct shape and append
+                if hourly_avg.shape == (24, 12):
+                    window_data.extend(hourly_avg.flatten())  # Store all 24-hour values (24 * 12 = 288)
                 else:
-                    print(f"Warning: Mismatch in feature length for day {day}, expected 11 features.")
+                    print(f"Warning: Mismatch in hourly averaging for day {day}.")
                     continue
 
-            # Check window data length after the first 7 days
-            #print(f"Window data length after first 7 days: {len(window_data)}")
-
-            # Next 8-11 days: Hourly averages for each feature (4 days * 24 values per day)
-            for day in range(8, 12):
+            # Next 3 days: Use full 10-minute intervals (no averaging)
+            for day in range(8, 11):
                 day_start = i + day * 144
                 day_end = day_start + 144
-                day_data = dataset_values[day_start:day_end, :]  # 每天144个数据点
+                day_data = dataset_values[day_start:day_end, :]  # Extract 144 time-step data
 
-                # Calculate hourly averages in a more optimized way
-                # Reshape the data into (24 hours, 60 minutes, 11 features) and then calculate mean over 60 minutes
-                hourly_avg = np.mean(day_data.reshape(24, 6, 11), axis=1)  # 24 hours, 60 minutes, 11 features
-
-                # Ensure it's the correct shape and append
-                if hourly_avg.shape == (24, 11):  # 24 hourly averages for each of the 11 features
-                    window_data.extend(hourly_avg.flatten())
-                else:
-                    print(f"Warning: Mismatch in hourly averages for day {day}.")
-                    continue
-
-            # Check window data length after the hourly averages (days 8-11)
-            #print(f"Window data length after hourly averages (days 8-11): {len(window_data)}")
-
-            # Last 3 days: 10-minute interval values (3 days * 144 * 11 features)
-            for day in range(12, 15):
-                day_start = i + day * 144
-                day_end = day_start + 144
-                day_data = dataset_values[day_start:day_end, :]  # 每天144个数据点
-
-                # Ensure the shape matches 144 intervals * 11 features and append
-                if day_data.shape == (144, 11):  # 144 intervals for 11 features
-                    window_data.extend(day_data.flatten())
+                # Ensure the correct shape and append
+                if day_data.shape == (144, 12):
+                    window_data.extend(day_data.flatten())  # Store all 144 values (144 * 12 = 1728)
                 else:
                     print(f"Warning: Mismatch in 10-minute intervals for day {day}.")
                     continue
 
-            # Check window data length after the 10-minute intervals (days 12-14)
-            #print(f"Window data length after 10-minute intervals (days 12-14): {len(window_data)}")
-
             # Check the final length of window_data
             # Add target data to y after checking the conditions
-            if len(window_data) == 6039:
+            if len(window_data) == 7200:
                 X.append(window_data)
 
                 # Ensure that we are accessing the target values correctly
-                target_data = dataset_values[i + window_size:i + window_size + forecast_size, -1]  # Target wind speed
+                target_data = dataset_values[i + window_size:i + window_size + forecast_size, CONFIG['data']['speed_column']]  # Target wind speed
 
                 # Only append if target_data is valid and not empty
                 if target_data.size == forecast_size:  # Make sure we have the correct size
@@ -299,6 +255,8 @@ def create_sliding_windows(wind_data, window_size=2016, forecast_size=144, shift
     print(X.shape,y.shape)
 
     print(f"Total valid sliding windows created with shift={shift}: {len(X)}")
+    print(f"Final window shapes - X: {np.array(X).shape}, Y: {np.array(y).shape}")
+
     return X, y
 
 
@@ -319,118 +277,145 @@ def add_noise_tf(x, y, noise_level=0.05):
     return x_noisy, y
 
 
-def prepare_datasets(X, y, train_ratio, val_ratio, batch_size):
-    """
-    Memory efficient dataset preparation with proper iteration handling
+def data_generator(X, y):
+    """Generator to yield one sample at a time."""
+    for i in range(len(X)):
+        yield X[i], y[i]
 
-    Args:
-        X: Input features array
-        y: Target values array
-        train_ratio: Ratio of data for training
-        val_ratio: Ratio of data for validation
-        batch_size: Batch size for training
 
-    Returns:
-        train_dataset, val_dataset, test_dataset, X_test, y_test, dataset_info
+def prepare_datasets(X, y, test_ratio=0.1, val_ratio=0.1, batch_size=32, num_folds=5):
     """
-    # Calculate splits
+    Memory-efficient dataset preparation with K-fold and controlled ratios.
+    1. First separates test_ratio (10%) for final testing
+    2. Then does K-fold on remaining data with val_ratio (10%) for validation
+    3. Returns both TensorFlow datasets and serializable raw data
+    """
     n_samples = len(X)
-    train_size = int(train_ratio * n_samples)
-    val_size = int(val_ratio * n_samples)
-    test_size = n_samples - train_size - val_size
 
-    # Calculate steps per epoch
-    steps_per_epoch = {
-        'train': train_size // batch_size,
-        'val': val_size // batch_size,
-        'test': test_size // batch_size
-    }
+    # First split out test set
+    test_size = int(test_ratio * n_samples)
+    test_indices = np.random.choice(n_samples, test_size, replace=False)
+    train_val_indices = np.setdiff1d(np.arange(n_samples), test_indices)
 
-    # Create indices for splits
-    indices = np.arange(n_samples)
-    np.random.shuffle(indices)
+    # Get test data
+    X_test, y_test = X[test_indices], y[test_indices]
 
-    train_indices = indices[:train_size]
-    val_indices = indices[train_size:train_size + val_size]
-    test_indices = indices[train_size + val_size:]
+    print(f"\nInitial Split:")
+    print(f"Total Samples: {n_samples}")
+    print(f"Test Set: {test_size} samples ({test_size / n_samples:.1%})")
+    print(f"Train-Val Set: {len(train_val_indices)} samples ({len(train_val_indices) / n_samples:.1%})")
 
-    print(f"Training Pairs: {train_size}, Validation Pairs: {val_size}, Testing Pairs: {test_size}")
-
-    def make_dataset(indices, is_training=False):
-        """Create dataset with proper handling of iterations
-
-        Args:
-            indices: Array of indices to use for this dataset
-            is_training: Whether this is for training (affects shuffling)
-
-        Returns:
-            A configured TensorFlow dataset
-        """
-
-        def generator():
-            # Process in smaller chunks to save memory
-            chunk_size = min(1000, len(indices))
-            current_indices = indices.copy()
-
-            # Shuffle indices if training
-            if is_training:
-                np.random.shuffle(current_indices)
-
-            # Generate data in chunks
-            for i in range(0, len(current_indices), chunk_size):
-                chunk_indices = current_indices[i:min(i + chunk_size, len(current_indices))]
-                yield (X[chunk_indices], y[chunk_indices])
-
-        # Create dataset with proper types and shapes
-        dataset = tf.data.Dataset.from_generator(
-            generator,
-            output_signature=(
-                tf.TensorSpec(shape=(None, X.shape[1]), dtype=tf.float32),
-                tf.TensorSpec(shape=(None, y.shape[1]), dtype=tf.float32)
-            )
+    # Create test dataset
+    test_dataset = tf.data.Dataset.from_generator(
+        lambda: ((X[i], y[i]) for i in test_indices),
+        output_signature=(
+            tf.TensorSpec(shape=(X.shape[1],), dtype=tf.float32),
+            tf.TensorSpec(shape=(y.shape[1],), dtype=tf.float32)
         )
+    ).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
-        # Configure dataset
-        dataset = dataset.unbatch()
+    # Prepare K-fold splits on remaining data
+    kf = KFold(n_splits=num_folds, shuffle=True, random_state=42)
+    fold_datasets = []
+    fold_data_raw = []  # For serialization
 
-        # Add shuffling for training
-        if is_training:
-            dataset = dataset.map(lambda x,y: add_noise_tf(x,y,noise_level=0.02))
-            dataset = dataset.shuffle(buffer_size=min(len(indices), 10000))
+    # Calculate validation size for remaining data
+    remaining_samples = len(train_val_indices)
+    val_size = int(val_ratio * remaining_samples)
 
+    # Store splits for all folds
+    all_fold_splits = list(kf.split(train_val_indices))
 
-        # Batch the dataset
-        dataset = dataset.batch(batch_size)
+    for fold, (train_idx, val_idx) in enumerate(all_fold_splits):
+        # Ensure validation set is exactly val_ratio
+        if len(val_idx) > val_size:
+            # Move excess samples to training
+            move_to_train = val_idx[val_size:]
+            val_idx = val_idx[:val_size]
+            train_idx = np.concatenate([train_idx, move_to_train])
 
-        # Return with prefetch
-        return dataset.prefetch(tf.data.AUTOTUNE)
+        # Get actual indices
+        train_indices = train_val_indices[train_idx]
+        val_indices = train_val_indices[val_idx]
 
-    # Create datasets with proper configuration
-    train_dataset = make_dataset(train_indices, is_training=True)
-    val_dataset = make_dataset(val_indices, is_training=True)
-    test_dataset = make_dataset(test_indices, is_training=False)
+        print(f"\nFold {fold + 1}:")
+        print(f"Train size: {len(train_indices)} samples ({len(train_indices) / remaining_samples:.1%})")
+        print(f"Val size: {len(val_indices)} samples ({len(val_indices) / remaining_samples:.1%})")
 
-    # Save memory by only keeping test data needed for evaluation
-    X_test = X[test_indices]
-    y_test = y[test_indices]
+        # Create memory-efficient datasets
+        train_dataset = tf.data.Dataset.from_generator(
+            lambda: ((X[i], y[i]) for i in train_indices),
+            output_signature=(
+                tf.TensorSpec(shape=(X.shape[1],), dtype=tf.float32),
+                tf.TensorSpec(shape=(y.shape[1],), dtype=tf.float32)
+            )
+        ).shuffle(buffer_size=10000).batch(batch_size).prefetch(tf.data.AUTOTUNE)
 
-    # Create dataset info dictionary
-    # Create dataset info dictionary
+        val_dataset = tf.data.Dataset.from_generator(
+            lambda: ((X[i], y[i]) for i in val_indices),
+            output_signature=(
+                tf.TensorSpec(shape=(X.shape[1],), dtype=tf.float32),
+                tf.TensorSpec(shape=(y.shape[1],), dtype=tf.float32)
+            )
+        ).batch(batch_size).prefetch(tf.data.AUTOTUNE)
+
+        # Apply performance optimizations
+        options = tf.data.Options()
+        options.experimental_optimization.parallel_batch = True
+        options.experimental_optimization.map_parallelization = True
+
+        train_dataset = train_dataset.with_options(options)
+        val_dataset = val_dataset.with_options(options)
+
+        # Add to TensorFlow datasets list
+        fold_datasets.append((train_dataset, val_dataset))
+
+        # Extract raw arrays for serialization
+        # Get the actual data for this fold
+        X_train, y_train = X[train_indices], y[train_indices]
+        X_val, y_val = X[val_indices], y[val_indices]
+
+        # Add to serializable data list
+        fold_data_raw.append({
+            'train_X': X_train,
+            'train_y': y_train,
+            'val_X': X_val,
+            'val_y': y_val
+        })
+
+    # Calculate dataset info
     dataset_info = {
-        'steps_per_epoch': steps_per_epoch,
+        'batch_size': batch_size,
+        'num_folds': num_folds,
+        'steps_per_epoch': {
+            'train': len(train_indices) // batch_size,
+            'val': len(val_indices) // batch_size,
+            'test': test_size // batch_size
+        },
         'sizes': {
-            'train': train_size,
-            'val': val_size,
+            'total': n_samples,
+            'train': len(train_indices),
+            'val': len(val_indices),
             'test': test_size
         },
-        'batch_size': batch_size
+        'ratios': {
+            'test': test_size / n_samples,
+            'train': len(train_indices) / remaining_samples,
+            'val': len(val_indices) / remaining_samples
+        }
     }
-    print("\nDataset Info:")
-    print(f"Steps per epoch: {dataset_info['steps_per_epoch']}")
-    print(f"Batch size: {dataset_info['batch_size']}")
-    print(f"Dataset sizes: {dataset_info['sizes']}")
 
-    return train_dataset, val_dataset, test_dataset, X_test, y_test, dataset_info
+    for fold_idx, (train_dataset, val_dataset) in enumerate(fold_datasets):
+        for x_batch, y_batch in train_dataset.take(1):
+            print(f"Fold {fold_idx} - X batch shape: {x_batch.shape}, Y batch shape: {y_batch.shape}")
+
+    # Save fold_datasets.pkl with raw data
+    print("Saving fold_datasets.pkl...")
+    with open("fold_datasets.pkl", "wb") as f:
+        pickle.dump((fold_data_raw, dataset_info), f)
+    print(f"Saved fold_datasets.pkl with {len(fold_data_raw)} folds")
+
+    return fold_datasets, test_dataset, X_test, y_test, dataset_info
 
 
 # Optional: Add a function to calculate memory usage
@@ -465,28 +450,206 @@ def configure_dataset_options(dataset, batch_size, buffer_size=None):
     return dataset.with_options(options)
 
 
-def load_and_preprocess_data(config):
-    """Data loading and preprocessing"""
+def load_and_preprocess_data(config, k_folds=5):
+    """Data loading and preprocessing with K-Fold Cross-Validation."""
     try:
+        # Load and preprocess data
         nelson_data = load_csv(config['data']['nelson_file_id'])
         greymouth_data = load_csv(config['data']['greymouth_file_id'])
-
         final_dataset = preprocess_data(nelson_data, greymouth_data)
-        print("Data preprocessing completed!")
 
-        X, y = create_sliding_windows(final_dataset, 2016, 144, 1)
-        datasets = prepare_datasets(X, y,
-                                    config['training']['train_ratio'],
-                                    config['training']['val_ratio'],
-                                    config['data']['batch_size'])
+        # Create sliding windows
+        X, y = create_sliding_windows(final_dataset, 1440, 144, 6)
+
+        # Split test set first
+        n_samples = len(X)
+        test_size = int(0.1 * n_samples)
+        test_indices = np.random.choice(n_samples, test_size, replace=False)
+        train_val_indices = np.setdiff1d(np.arange(n_samples), test_indices)
+
+        # Split data
+        X_test, y_test = X[test_indices], y[test_indices]
+        X_train_val, y_train_val = X[train_val_indices], y[train_val_indices]
 
         # Save test dataset
         with open(config['data']['test_data_path'], "wb") as f:
-            pickle.dump((datasets[3], datasets[4]), f)
+            pickle.dump((X_test, y_test), f)
 
-        return datasets
+        # Prepare K-fold datasets
+        kf = KFold(n_splits=k_folds, shuffle=True, random_state=42)
+        fold_datasets = []
+
+        print(f"Creating {k_folds} folds with KFold...")
+        print(f"X_train_val shape: {X_train_val.shape}, y_train_val shape: {y_train_val.shape}")
+
+        for fold, (train_idx, val_idx) in enumerate(kf.split(X_train_val)):
+            print(f"Processing fold {fold + 1}...")
+            print(f"Train indices: {len(train_idx)}, Val indices: {len(val_idx)}")
+
+            X_train, X_val = X_train_val[train_idx], X_train_val[val_idx]
+            y_train, y_val = y_train_val[train_idx], y_train_val[val_idx]
+
+            print(f"X_train shape: {X_train.shape}, y_train shape: {y_train.shape}")
+            print(f"X_val shape: {X_val.shape}, y_val shape: {y_val.shape}")
+
+            # Create TensorFlow datasets
+            print(f"Creating TensorFlow datasets for fold {fold + 1}...")
+            try:
+                train_dataset = tf.data.Dataset.from_generator(
+                    lambda: data_generator(X_train, y_train),
+                    output_signature=(
+                        tf.TensorSpec(shape=(X_train.shape[1],), dtype=tf.float32),
+                        tf.TensorSpec(shape=(y_train.shape[1],), dtype=tf.float32)
+                    )
+                ).batch(config['data']['batch_size']).prefetch(tf.data.AUTOTUNE)
+
+                print(f"Train dataset created successfully for fold {fold + 1}")
+
+                val_dataset = tf.data.Dataset.from_generator(
+                    lambda: data_generator(X_val, y_val),
+                    output_signature=(
+                        tf.TensorSpec(shape=(X_val.shape[1],), dtype=tf.float32),
+                        tf.TensorSpec(shape=(y_val.shape[1],), dtype=tf.float32)
+                    )
+                ).batch(config['data']['batch_size']).prefetch(tf.data.AUTOTUNE)
+
+                print(f"Val dataset created successfully for fold {fold + 1}")
+
+                # Apply dataset options
+                train_dataset = configure_dataset_options(train_dataset, config['data']['batch_size'])
+                val_dataset = configure_dataset_options(val_dataset, config['data']['batch_size'])
+
+                print(f"Dataset options applied for fold {fold + 1}")
+
+                fold_datasets.append((train_dataset, val_dataset))
+                print(f"Fold {fold + 1} added to fold_datasets")
+
+            except Exception as e:
+                print(f"Error creating datasets for fold {fold + 1}: {str(e)}")
+                raise
+
+            print(f"Fold {fold + 1}: Train size = {len(X_train)}, Val size = {len(X_val)}")
+
+        print(f"Created {len(fold_datasets)} fold datasets")
+
+        # Save fold_datasets in a format that can be pickled
+        print("Preparing fold_datasets for saving...")
+        fold_data_raw = []
+
+        try:
+            for i, (train_ds, val_ds) in enumerate(fold_datasets):
+                print(f"Preparing fold {i + 1} for saving...")
+
+                # Create a dictionary to hold fold data
+                fold_dict = {
+                    'train_X': X_train_val[kf.split(X_train_val)[i][0]],
+                    'train_y': y_train_val[kf.split(X_train_val)[i][0]],
+                    'val_X': X_train_val[kf.split(X_train_val)[i][1]],
+                    'val_y': y_train_val[kf.split(X_train_val)[i][1]]
+                }
+                fold_data_raw.append(fold_dict)
+                print(f"Fold {i + 1} prepared for saving")
+
+            # Save fold_datasets.pkl with raw NumPy arrays
+            with open("fold_datasets.pkl", "wb") as f:
+                pickle.dump((fold_data_raw, dataset_info), f)
+            print(f"Saved fold_datasets.pkl with {len(fold_data_raw)} folds")
+
+        except Exception as e:
+            print(f"Error saving fold_datasets: {str(e)}")
+            raise
+
+        return fold_datasets, (X_test, y_test)
 
     except Exception as e:
         print(f"Error in data processing: {str(e)}")
         raise
 
+
+def print_dataset_info(dataset_info):
+    """Print detailed information about the datasets"""
+    print("\n Dataset Information:")
+    print(f"Training samples: {dataset_info['sizes']['train']:,}")
+    print(f"Validation samples: {dataset_info['sizes']['val']:,}")
+    print(f"Testing samples: {dataset_info['sizes']['test']:,}")
+    print(f"Batch size: {dataset_info['batch_size']}")
+    print(f"Steps per epoch (training): {dataset_info['steps_per_epoch']['train']:,}")
+    print(f"Steps per epoch (validation): {dataset_info['steps_per_epoch']['val']:,}")
+    print(f"Steps per epoch (testing): {dataset_info['steps_per_epoch']['test']:,}")
+
+
+def create_tf_dataset(X, y, batch_size):
+    """Create TF dataset from numpy arrays"""
+    return tf.data.Dataset.from_tensor_slices((X, y)) \
+        .batch(batch_size) \
+        .prefetch(tf.data.AUTOTUNE)
+
+
+def main():
+    try:
+        # Load and preprocess data
+        nelson_data = load_csv(CONFIG['data']['nelson_file_id'])
+        greymouth_data = load_csv(CONFIG['data']['greymouth_file_id'])
+
+        final_dataset = preprocess_data(nelson_data, greymouth_data)
+        window_shift = CONFIG['data']['window_shift']
+        X, y = create_sliding_windows(final_dataset, 1440, 144, window_shift)
+
+        # Split data into test and training sets
+        n_samples = len(X)
+        test_size = int(CONFIG['training']['test_ratio'] * n_samples)
+        test_indices = np.random.choice(n_samples, test_size, replace=False)
+        train_indices = np.setdiff1d(np.arange(n_samples), test_indices)
+
+        # Get test and training data
+        X_test, y_test = X[test_indices], y[test_indices]
+        X_train, y_train = X[train_indices], y[train_indices]
+
+        print(f"\nData Split:")
+        print(f"Total Samples: {n_samples}")
+        print(f"Test Set: {len(X_test)} samples ({len(X_test) / n_samples:.1%})")
+        print(f"Training Set: {len(X_train)} samples ({len(X_train) / n_samples:.1%})")
+
+        # Calculate dataset info
+        batch_size = CONFIG['data']['batch_size']
+        dataset_info = {
+            'batch_size': batch_size,
+            'steps_per_epoch': {
+                'train': len(X_train) // batch_size,
+                'val': int(len(X_train) * 0.1) // batch_size,  # Approx validation size
+                'test': len(X_test) // batch_size
+            },
+            'sizes': {
+                'total': n_samples,
+                'train': len(X_train),
+                'test': len(X_test)
+            }
+        }
+
+        # Save test data
+        test_data = {
+            'X_test': X_test,
+            'y_test': y_test,
+            'dataset_info': dataset_info
+        }
+        with open(CONFIG['data']['test_data_path'], "wb") as f:
+            pickle.dump(test_data, f)
+        print("Test dataset saved")
+
+        # Save training data for fold creation in training.py
+        train_data = {
+            'X_train': X_train,
+            'y_train': y_train,
+            'dataset_info': dataset_info
+        }
+        with open("fold_datasets.pkl", "wb") as f:
+            pickle.dump(train_data, f)
+        print("Training data saved for fold creation")
+
+    except Exception as e:
+        print(f"Data preprocessing failed: {str(e)}")
+        raise
+
+
+if __name__ == "__main__":
+    main()
