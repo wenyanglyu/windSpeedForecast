@@ -5,18 +5,20 @@ import pickle
 import os
 from model_builder import create_transformer, combined_loss, power_loss
 
+
 # Configuration
 CONFIG = {
     'data': {
         'fold_datasets_path': "fold_datasets.pkl",
-        'test_data_path': "test_dataset.pkl"
+        'test_data_path': "test_dataset.pkl",
+        'data_preprocessing_batch': 32
     },
     'training': {
-        'epochs': 200,
+        'epochs': 2000,
         'save_path': 'wind_forecast_model',
-        'batch_size': 32,
-        'optimizer_patience': 10,  # Switch optimizer after 5 epochs without improvement
-        'early_stop_patience': 25  # Stop training if no improvement for 15 epochs
+        'batch_size': 64,
+        'optimizer_patience': 15,  # Switch optimizer after 5 epochs without improvement
+        'early_stop_patience': 60  # Stop training if no improvement for 15 epochs
     },
     'paths': {
         'model_path': "wind_forecast_model.keras",
@@ -24,15 +26,15 @@ CONFIG = {
     },
     'model': {
         # Best hyperparameters from analysis
-        'd_model': 320,  # Using top performer from group analysis
+        'd_model': 384,  # Using top performer from group analysis
         'num_heads': 16,  # Using top performer from group analysis
-        'dff': 768,  # Using top performer from group analysis
+        'dff': 1024,  # Using top performer from group analysis
         'num_layers': 2,  # Using top performer from group analysis
         'dropout_rate': 0.0521  # From best trial
     },
     'optimizers': {
-        'primary': 'adam',  # Start with the best performer
-        'secondary': 'adamw'  # Switch to this if plateaued
+        'primary': 'adamw',  # Start with the best performer
+        'secondary': 'adam'  # Switch to this if plateaued
     }
 }
 
@@ -210,20 +212,22 @@ def train_model_with_advanced_strategy(model, train_dataset, val_dataset, steps_
     Train model with advanced optimizer and learning rate cycling strategy
     """
     # Initial learning rate
-    initial_lr = 0.001
+    initial_lr = 0.0001
 
     # Set up initial optimizer (adam)
     primary_optimizer = tf.keras.optimizers.Adam(learning_rate=initial_lr)
 
-    # Prepare callbacks
     callbacks = [
-        # Advanced training callback that handles optimizer and learning rate cycling
-        AdvancedTrainingCallback(
-            patience=CONFIG['training']['optimizer_patience'],
+        # Reduce learning rate when validation loss plateaus
+        tf.keras.callbacks.ReduceLROnPlateau(
+            monitor='val_loss',
+            factor=0.5,  # Reduce by half
+            patience=10,  # Wait for 10 epochs before reducing
+            min_lr=1e-6,  # Prevent going too low
             verbose=1
         ),
 
-        # Early stopping with high patience
+        # Stop training if no improvement for too long
         tf.keras.callbacks.EarlyStopping(
             monitor='val_loss',
             patience=CONFIG['training']['early_stop_patience'],
@@ -231,9 +235,9 @@ def train_model_with_advanced_strategy(model, train_dataset, val_dataset, steps_
             verbose=1
         ),
 
-        # Save model checkpoints
+        # Save the best model checkpoint
         tf.keras.callbacks.ModelCheckpoint(
-            f"{CONFIG['training']['save_path']}_checkpoint.h5",
+            CONFIG['paths']['model_path'],
             monitor='val_loss',
             save_best_only=True,
             verbose=1
@@ -267,20 +271,37 @@ def train_model_with_advanced_strategy(model, train_dataset, val_dataset, steps_
         'verbose': 1
     }
 
-    # Add steps_per_epoch if provided
+    # Add steps_per_epoch if provided, but recalculate based on current batch size
     if steps_per_epoch is not None:
+        # Get the original batch size from config
+        original_batch_size = CONFIG['data']['data_preprocessing_batch']
+
+        # Calculate actual dataset sizes
+        train_size = steps_per_epoch['train'] * original_batch_size
+        val_size = steps_per_epoch['val'] * original_batch_size
+
+        # Recalculate steps with current batch size
+        current_batch_size = CONFIG['training']['batch_size']
+        recalculated_steps = {
+            'train': train_size // current_batch_size,
+            'val': val_size // current_batch_size
+        }
+
         fit_kwargs.update({
-            'steps_per_epoch': steps_per_epoch['train'],
-            'validation_steps': steps_per_epoch['val']
+            'steps_per_epoch': recalculated_steps['train'],
+            'validation_steps': recalculated_steps['val']
         })
-        print(f"Using steps_per_epoch: train={steps_per_epoch['train']}, val={steps_per_epoch['val']}")
+        print(
+            f"Original steps with batch_size={original_batch_size}: train={steps_per_epoch['train']}, val={steps_per_epoch['val']}")
+        print(
+            f"Recalculated steps with batch_size={current_batch_size}: train={recalculated_steps['train']}, val={recalculated_steps['val']}")
 
     # Train the model
     print("\n=== Starting training with advanced optimizer and learning rate cycling ===")
-    print(f"Initial optimizer: adam")
+    print(f"Initial optimizer: adamw")
     print(f"Initial learning rate: {initial_lr}")
     print(f"Strategy: After {CONFIG['training']['optimizer_patience']} epochs without improvement:")
-    print(f"  - First, switch to alternative optimizer (adam ↔ adamw)")
+    print(f"  - First, switch to alternative optimizer (adamw ↔ adam)")
     print(f"  - Then, if still no improvement, double learning rate")
     print(f"Early stopping patience: {CONFIG['training']['early_stop_patience']} epochs")
 
@@ -298,7 +319,8 @@ def train_model_with_advanced_strategy(model, train_dataset, val_dataset, steps_
 
 
 def plot_training_progress(history, fold_idx=None):
-    """Enhanced plotting function with all metrics"""
+    """Plot training progress while ignoring early high-loss epochs."""
+    start_epoch = 20
     metrics_to_plot = [
         ('loss', 'val_loss', 'Loss'),
         ('mae', 'val_mae', 'Normalized MAE'),
@@ -310,12 +332,16 @@ def plot_training_progress(history, fold_idx=None):
     fig, axes = plt.subplots(len(metrics_to_plot), 1, figsize=(12, 4 * len(metrics_to_plot)))
 
     if len(metrics_to_plot) == 1:
-        axes = [axes]  # Make it iterable if only one metric
+        axes = [axes]  # Ensure iterable
 
     for i, (train_metric, val_metric, title) in enumerate(metrics_to_plot):
         if train_metric in history.history and val_metric in history.history:
-            axes[i].plot(history.history[train_metric], label='Train')
-            axes[i].plot(history.history[val_metric], label='Validation')
+            # Extract data from `start_epoch` onward
+            epochs = range(start_epoch, len(history.history[train_metric]))
+
+            axes[i].plot(epochs, history.history[train_metric][start_epoch:], label='Train')
+            axes[i].plot(epochs, history.history[val_metric][start_epoch:], label='Validation')
+
             axes[i].set_title(title)
             axes[i].set_xlabel('Epoch')
             axes[i].set_ylabel(title)
@@ -324,13 +350,13 @@ def plot_training_progress(history, fold_idx=None):
 
     plt.tight_layout()
 
-    # Save with fold info if provided
-    if fold_idx is not None:
-        plt.savefig(f"training_progress_fold{fold_idx}.png", dpi=300, bbox_inches='tight')
-    else:
-        plt.savefig("training_progress.png", dpi=300, bbox_inches='tight')
+    # Save the plot
+    filename = f"training_progress_fold{fold_idx}.png" if fold_idx else "training_progress.png"
+    plt.savefig(filename, dpi=300, bbox_inches='tight')
+    print(f"✅ Training progress plot saved: {filename}")
 
     plt.close()
+
 
 
 def plot_forecast(real_values, forecasted_values, time_range, fold_idx=None):
@@ -395,74 +421,9 @@ def evaluate_model(model, test_dataset):
 
     return metrics
 
-
-def create_fold_datasets_from_test(test_data, num_folds=3):
-    """
-    Create fold datasets from test data for demonstration purposes
-    when the fold_datasets.pkl file is missing.
-    """
-    print("⚠️ fold_datasets.pkl not found or corrupted. Creating fold datasets from test data...")
-
-    X_test = test_data['X_test']
-    y_test = test_data['y_test']
-
-    # Get total size
-    total_size = len(X_test)
-    fold_size = total_size // num_folds
-
-    fold_datasets = []
-    steps_per_epoch = {}
-
-    # Create folds
-    for i in range(num_folds):
-        # Define start and end indices for validation data
-        val_start = i * fold_size
-        val_end = (i + 1) * fold_size if i < num_folds - 1 else total_size
-
-        # Split data into train and validation
-        val_indices = list(range(val_start, val_end))
-        train_indices = [j for j in range(total_size) if j not in val_indices]
-
-        X_train = X_test[train_indices]
-        y_train = y_test[train_indices]
-        X_val = X_test[val_indices]
-        y_val = y_test[val_indices]
-
-        # Create TensorFlow datasets
-        train_dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train)) \
-            .batch(CONFIG['training']['batch_size']) \
-            .prefetch(tf.data.AUTOTUNE)
-
-        val_dataset = tf.data.Dataset.from_tensor_slices((X_val, y_val)) \
-            .batch(CONFIG['training']['batch_size']) \
-            .prefetch(tf.data.AUTOTUNE)
-
-        fold_datasets.append((train_dataset, val_dataset))
-
-    # Calculate steps per epoch
-    steps_per_epoch = {
-        'train': (total_size - fold_size) // CONFIG['training']['batch_size'],
-        'val': fold_size // CONFIG['training']['batch_size']
-    }
-
-    # Create dataset_info
-    dataset_info = {
-        'steps_per_epoch': steps_per_epoch,
-        'num_folds': num_folds,
-        'total_size': total_size,
-        'fold_size': fold_size
-    }
-
-    print(f"Created {num_folds} fold datasets from test data")
-    print(f"Train steps per epoch: {steps_per_epoch['train']}")
-    print(f"Validation steps per epoch: {steps_per_epoch['val']}")
-
-    return fold_datasets, dataset_info
-
-
 def load_fold_datasets(fold_datasets_path):
     """
-    Load fold datasets from a dictionary format
+    Load fold datasets from the saved format with multiple folds
     """
     try:
         # Check file exists and load
@@ -472,36 +433,92 @@ def load_fold_datasets(fold_datasets_path):
         with open(fold_datasets_path, "rb") as f:
             data = pickle.load(f)
 
-        # Check it's a dictionary with expected keys
-        if not isinstance(data, dict):
-            raise ValueError("Fold datasets should be a dictionary")
+        # Check if it's the expected format (tuple with fold_data_raw and dataset_info)
+        if not isinstance(data, tuple) or len(data) != 2:
+            print(f"Unexpected data format: {type(data)}")
+            # Try to handle the alternative format
+            if isinstance(data, dict) and 'X_train' in data:
+                print("Detected alternative format (single training set)")
+                # Create a single fold for backward compatibility
+                X_train = data['X_train']
+                y_train = data['y_train']
+                dataset_info = data.get('dataset_info', {})
 
-        required_keys = {'X_train', 'y_train', 'dataset_info'}
-        if not all(key in data for key in required_keys):
-            raise ValueError(f"Missing required keys. Found: {set(data.keys())}")
+                # Convert to TensorFlow datasets
+                train_dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train)) \
+                    .batch(CONFIG['training']['batch_size']) \
+                    .shuffle(1000) \
+                    .prefetch(tf.data.AUTOTUNE)
 
-        # Create fold datasets
-        X_train = data['X_train']
-        y_train = data['y_train']
-        dataset_info = data['dataset_info']
+                # For validation, use a small portion of the training data
+                # This is just a fallback and not ideal for real training
+                val_size = int(0.1 * len(X_train))
+                X_val = X_train[:val_size]
+                y_val = y_train[:val_size]
 
-        # Convert to TensorFlow datasets
-        train_dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train)) \
-            .batch(CONFIG['training']['batch_size']) \
-            .prefetch(tf.data.AUTOTUNE)
+                val_dataset = tf.data.Dataset.from_tensor_slices((X_val, y_val)) \
+                    .batch(CONFIG['training']['batch_size']) \
+                    .prefetch(tf.data.AUTOTUNE)
 
-        # Creating a list with a single fold dataset
-        fold_datasets = [(train_dataset, train_dataset)]  # Using train_dataset for both train and val
+                return [(train_dataset, val_dataset)], dataset_info
+            else:
+                raise ValueError("Unexpected data format and cannot create fallback")
+
+        # Extract fold data and dataset info
+        fold_data_raw, dataset_info = data
+
+        # Ensure fold_data_raw is a list
+        if not isinstance(fold_data_raw, list):
+            raise ValueError(f"Expected fold_data_raw to be a list, got {type(fold_data_raw)}")
+
+        print(f"Found {len(fold_data_raw)} folds in the dataset")
+
+        # Create TensorFlow datasets for each fold
+        fold_datasets = []
+        for i, fold_dict in enumerate(fold_data_raw):
+            # Check if the fold has the expected keys
+            required_keys = {'train_X', 'train_y', 'val_X', 'val_y'}
+            if not all(key in fold_dict for key in required_keys):
+                raise ValueError(f"Fold {i} missing required keys. Found: {set(fold_dict.keys())}")
+
+            # Create train dataset
+            train_dataset = tf.data.Dataset.from_tensor_slices(
+                (fold_dict['train_X'], fold_dict['train_y'])
+            ).shuffle(10000).batch(CONFIG['training']['batch_size']).prefetch(tf.data.AUTOTUNE)
+
+            # Create validation dataset
+            val_dataset = tf.data.Dataset.from_tensor_slices(
+                (fold_dict['val_X'], fold_dict['val_y'])
+            ).batch(CONFIG['training']['batch_size']).prefetch(tf.data.AUTOTUNE)
+
+            # Add to fold datasets
+            fold_datasets.append((train_dataset, val_dataset))
+
+            print(
+                f"Fold {i + 1} loaded with {len(fold_dict['train_X'])} training and {len(fold_dict['val_X'])} validation samples")
 
         return fold_datasets, dataset_info
 
     except Exception as e:
         print(f"❌ Error loading fold datasets: {type(e).__name__}")
         print(f"Detailed error: {str(e)}")
+        # Add more detailed error information for debugging
+        import traceback
+        traceback.print_exc()
         raise
 
 def main():
     try:
+        # Restrict TensorFlow to only allocate necessary memory
+        gpus = tf.config.experimental.list_physical_devices('GPU')
+        if gpus:
+            try:
+                for gpu in gpus:
+                    tf.config.experimental.set_memory_growth(gpu, True)
+                    print("Restrict TensorFlow to only allocate necessary memory")
+            except RuntimeError as e:
+                print(f"GPU Memory Growth Error: {e}")
+
         # Create directories
         os.makedirs(CONFIG['paths']['logs_dir'], exist_ok=True)
 
@@ -517,11 +534,17 @@ def main():
             .batch(CONFIG['training']['batch_size']) \
             .prefetch(tf.data.AUTOTUNE)
 
-        # Load fold datasets with comprehensive error checking
+        # Load training data
+        print("\nLoading training data...")
         try:
+            # Try to load datasets
             fold_datasets, dataset_info = load_fold_datasets(CONFIG['data']['fold_datasets_path'])
+            print(f"Successfully loaded {len(fold_datasets)} fold(s)")
+
         except Exception as load_error:
-            print("Cannot proceed due to fold datasets loading error.")
+            print(f"Error loading datasets: {str(load_error)}")
+            print("Falling back to creating simple train/val split from test data")
+            exit()
 
         # Create a dictionary of hyperparameters
         hyperparams = {
@@ -539,7 +562,7 @@ def main():
         # Train on each fold
         fold_models = []
         for fold_idx, (train_dataset, val_dataset) in enumerate(fold_datasets):
-            print(f"\n\n======== Training on Fold {fold_idx + 1} ========")
+            print(f"\n\n======== Training on Fold {fold_idx + 1}/{len(fold_datasets)} ========")
 
             # Build a fresh model for each fold
             model = build_model(hyperparams)
@@ -549,7 +572,7 @@ def main():
                 model,
                 train_dataset,
                 val_dataset,
-                steps_per_epoch=dataset_info['steps_per_epoch']
+                steps_per_epoch=dataset_info.get('steps_per_epoch')
             )
 
             # Plot training progress for each fold
