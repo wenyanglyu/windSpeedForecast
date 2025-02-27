@@ -14,9 +14,9 @@ CONFIG = {
     },
     'training': {
         'optuna_epochs': 20,  # Epochs per trial
-        'n_trials_per_run': 20,  # Number of trials per run
-        'total_runs': 5,  # 5 runs of 20 epochs = 100 epochs
-        'save_dir': "optuna_results"  # Folder to store results (✅ ADDED)
+        'n_trials_per_run': 15,  # Number of trials per run
+        'total_runs': 50,  # 5 runs of 20 epochs = 100 epochs
+        'save_dir': "optuna_results"  # Folder to store results ( ADDED)
     }
 }
 
@@ -64,10 +64,10 @@ def objective(trial, train_dataset, val_dataset, optuna_epochs, steps_per_epoch)
         d_model = trial.suggest_int("d_model", 64, 512, step=64)
         num_heads = trial.suggest_int("num_heads", 2, 16, step=2)
         dff = trial.suggest_int("dff", 128, 1024, step=128)
-        num_layers = trial.suggest_int("num_layers", 2, 6)
-        dropout_rate = trial.suggest_float("dropout_rate", 0.05, 0.25)
-        loss_function = trial.suggest_categorical("loss_function", ["mae", "mse", "huber"])
-        optimizer_name = trial.suggest_categorical("optimizer", ["adam", "adamw", "rmsprop", "sgd"])
+        num_layers = trial.suggest_int("num_layers", 2, 3)   # 2 3 more effective
+        dropout_rate = trial.suggest_float("dropout_rate", 0.01, 0.25)
+        loss_function = trial.suggest_categorical("loss_function", ["huber"])
+        optimizer_name = trial.suggest_categorical("optimizer", ["adamw"])
         learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
 
         # Define optimizer
