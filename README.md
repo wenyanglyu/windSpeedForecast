@@ -62,10 +62,11 @@ python optuna_analysis.py
 Formal training with best hyperparameters.
 
 Configuration:
-- `epochs`: 200
+- `epochs`: 2000
 - `optimizer_patience`: 10 - Switch optimizer after 10 epochs without improvement
 - `early_stop_patience`: 25 - Stop training if no improvement for 25 epochs
-
+- `batch_size`: 64 Bigger size have better performance but also require higher GPU memory
+  
 Hyperparameters:
 ```python
 'model': {
@@ -101,3 +102,6 @@ python forecast.py
 Outputs:
 - Wind speed and power comparison plots
 - Detailed metrics in forecast_metrics.txt
+
+### 7. data_analysis folder
+Evaluates features relationship, correlation and importance.
