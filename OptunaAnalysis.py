@@ -18,6 +18,32 @@ STRUCTURAL_PARAMS = ["d_model", "num_heads", "dff", "num_layers"]
 TUNABLE_PARAMS = ["optimizer", "loss_function", "learning_rate", "dropout_rate"]
 
 
+def save_optuna_results_to_csv(df):
+    """
+    Save Optuna trial results to a CSV file for easier analysis with other tools.
+
+    Args:
+        df (pandas.DataFrame): DataFrame containing Optuna trial results
+
+    Returns:
+        str: Path to the saved CSV file
+    """
+    if df is None or df.empty:
+        print("No data available to save to CSV.")
+        return None
+
+    # Create output path
+    csv_path = os.path.join(CONFIG['results_dir'], "optuna_trials.csv")
+
+    # Save to CSV
+    try:
+        df.to_csv(csv_path, index=False)
+        print(f"\nSaved {len(df)} Optuna trials to {csv_path}")
+        return csv_path
+    except Exception as e:
+        print(f"Error saving to CSV: {str(e)}")
+        return None
+
 def load_optuna_trials():
     """Load Optuna trial results from pkl files."""
     all_trials = []
@@ -252,6 +278,9 @@ def main():
     df = load_optuna_trials()
 
     if df is not None and not df.empty:
+        # Save results to CSV for external analysis
+        save_optuna_results_to_csv(df)
+
         # Analyze best parameters (structural vs tunable)
         analyze_best_params(df)
 
@@ -261,7 +290,7 @@ def main():
         # Generate final model recommendation
         generate_final_model_recommendation(df)
 
-        print("\nAnalysis completed! Check the optuna_results directory for visualizations.")
+        print("\nAnalysis completed! Check the optuna_results directory for visualizations and CSV export.")
     else:
         print("Analysis failed: No valid data loaded.")
 
