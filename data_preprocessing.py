@@ -13,7 +13,7 @@ CONFIG = {
         'train_data_path': "train_data.pkl",
         'speed_column': 7,
         'batch_size': 32,
-        'window_shift': 6
+        'window_shift': 3
     },
     'training': {
         'train_ratio': 0.8,
