@@ -265,7 +265,7 @@ def load_model(filepath):
             filepath,
             custom_objects=custom_objects
         )
-        print(" Model loaded successfully")
+        print("✅ Model loaded successfully")
 
         # Print model summary
         print("\nModel Architecture:")
@@ -274,5 +274,5 @@ def load_model(filepath):
         return model
 
     except Exception as e:
-        print(f" Error loading model: {str(e)}")
+        print(f"❌ Error loading model: {str(e)}")
         raise
