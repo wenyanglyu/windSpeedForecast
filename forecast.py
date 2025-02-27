@@ -236,6 +236,58 @@ def compare_power_output(test_data, model):
         import traceback
         traceback.print_exc()
 
+def calculate_average_metrics(test_data, model):
+    """
+    Calculate the average metrics (MAE, MSE, Power MAE, Power MSE) across the entire test dataset.
+    """
+    try:
+        # Prepare the actual and predicted wind speeds
+        X_test = test_data['X_test']
+        y_actual = test_data['y_test']
+
+        # Predict wind speeds for the entire test set
+        y_predicted = model.predict(X_test)
+
+        # Ensure consistent shapes
+        if y_predicted.ndim == 3 and y_predicted.shape[-1] == 1:
+            y_predicted = y_predicted.squeeze(-1)
+
+        # Denormalize actual and predicted wind speeds
+        y_actual_denorm = denormalize_wind_speed(y_actual)
+        y_predicted_denorm = denormalize_wind_speed(y_predicted)
+
+        # Calculate power output for actual and predicted wind speeds
+        actual_power_output = np.array([
+            [calculate_power_output(speed) for speed in day_speeds]
+            for day_speeds in y_actual_denorm
+        ])
+
+        predicted_power_output = np.array([
+            [calculate_power_output(speed) for speed in day_speeds]
+            for day_speeds in y_predicted_denorm
+        ])
+
+        # Calculate metrics across all days in the test dataset
+        # Wind speed MAE and MSE
+        wind_speed_mae = np.mean(np.abs(y_actual_denorm - y_predicted_denorm))
+        wind_speed_mse = np.mean((y_actual_denorm - y_predicted_denorm) ** 2)
+
+        # Power MAE and MSE
+        power_mae = np.mean(np.abs(actual_power_output - predicted_power_output))
+        power_mse = np.mean((actual_power_output - predicted_power_output) ** 2)
+
+        # Print the average metrics
+        print("\nAverage Metrics Across Entire Test Dataset:")
+        print(f"Average Wind Speed MAE: {wind_speed_mae:.2f} m/s")
+        print(f"Average Wind Speed MSE: {wind_speed_mse:.2f} m²/s²")
+        print(f"Average Power MAE: {power_mae:.2f} W")
+        print(f"Average Power MSE: {power_mse:.2f} W²")
+
+    except Exception as e:
+        print(f"Error in calculate_average_metrics: {e}")
+        import traceback
+        traceback.print_exc()
+
 
 def import_module_from_path(module_name, module_path):
     """
@@ -334,8 +386,12 @@ def main():
         print("Failed to load model. Exiting.")
         return
 
-    # Compare power output
+    # Compare power output for lowest temperature days
     compare_power_output(test_data, model)
+
+    # Calculate and print average metrics across the entire dataset
+    calculate_average_metrics(test_data, model)
+
 
 
 if __name__ == "__main__":
