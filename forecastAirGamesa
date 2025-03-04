@@ -1,0 +1,102 @@
+import importlib.util
+import sys
+import os
+import tensorflow as tf
+import numpy as np
+import pickle
+import matplotlib.pyplot as plt
+from model_builder import TemporalEmbedding, create_transformer
+
+# Configuration (mirroring the training script's config)
+CONFIG = {
+    'data': {
+        'test_data_path': "test_dataset.pkl",
+        'model_path': "wind_forecast_model.keras"
+    }
+}
+
+
+def load_test_dataset():
+    """Load the test dataset from pickle file"""
+    with open(CONFIG['data']['test_data_path'], "rb") as f:
+        test_data = pickle.load(f)
+    return test_data
+
+
+def denormalize_wind_speed(normalized_speed):
+    """Denormalize wind speed values"""
+    min_speed = 0.0
+    max_speed = 21.6
+    return normalized_speed * (max_speed - min_speed) + min_speed
+
+
+def air_density(P, T, RH):
+    """
+    Calculate air density considering humidity effects.
+    
+    Parameters:
+    P  - Atmospheric pressure in Pascals
+    T  - Temperature in Kelvin
+    RH - Relative Humidity (0 to 1)
+    
+    Returns:
+    rho - Air density in kg/m^3
+    """
+    R_d = 287.058  # Specific gas constant for dry air (J/kg·K)
+    R_v = 461.495  # Specific gas constant for water vapor (J/kg·K)
+    
+    # Calculate saturation vapor pressure using Tetens' formula
+    e_s = 6.1078 * 10**((7.5 * (T - 273.15)) / ((T - 273.15) + 237.3)) * 100  # Convert hPa to Pa
+    
+    # Actual vapor pressure
+    e = RH * e_s
+    
+    # Calculate air density
+    rho = ((P - e) / (R_d * T)) + (e / (R_v * T))
+    
+    return rho
+
+
+def calculate_power_output(wind_speed, P=100000, T=280, RH=0.75):
+    """
+    Calculate power output using the wind power equation, adjusted for air density.
+    """
+    # Standard air density (sea level, 15°C, 101325 Pa, dry air)
+    STANDARD_AIR_DENSITY = 1.225  # kg/m^3
+    
+    # Compute real air density based on actual conditions
+    rho_real = air_density(P, T, RH)
+    
+    # Wind turbine power curve data
+    wind_speeds = np.array([0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10, 10.5, 11, 11.5, 12, 12.5, 13, 13.5, 14, 14.5, 15, 15.5, 16, 16.5, 17, 17.5, 18, 18.5, 19, 19.5, 20, 20.5, 21, 21.5, 22, 22.5, 23, 23.5, 24, 24.5, 25, 25.5, 26, 26.5, 27, 27.5, 28, 28.5, 29, 29.5, 30])
+    power_standard = np.array([0, 0, 0, 0, 75, 120, 165, 230, 300, 450, 600, 760, 967, 1250, 1533, 1870, 2200, 2620, 3018, 3450, 3774, 4080, 4314, 4430, 4490, 4500, 4500, 4500, 4500, 4500, 4500, 4500, 4500, 4500, 4500, 4500, 4500, 4403, 4306, 4210, 4113, 4016, 3919, 3823, 3725, 3629, 3532, 3435, 3339, 3242, 3145, 3048, 2950, 2855, 2758, 0, 0, 0, 0, 0, 0])
+    
+    # Interpolate standard power from the given wind speed
+    standard_power = np.interp(wind_speed, wind_speeds, power_standard)
+    
+    # Adjust power output based on real air density
+    real_power = (rho_real / STANDARD_AIR_DENSITY) * standard_power
+    
+    return real_power
+
+
+def main():
+    # Load test dataset
+    test_data = load_test_dataset()
+
+    # Load the saved model with custom handling
+    model = load_custom_model(CONFIG['data']['model_path'])
+
+    if model is None:
+        print("Failed to load model. Exiting.")
+        return
+
+    # Compare power output for lowest temperature days
+    compare_power_output(test_data, model)
+
+    # Calculate and print average metrics across the entire dataset
+    calculate_average_metrics(test_data, model)
+
+
+if __name__ == "__main__":
+    main()
